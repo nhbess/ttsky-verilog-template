@@ -11,6 +11,9 @@ score counts correct bits over all (input row, output line) pairs.
 Training FSM matches tt_parity3_spec (plateau compare, plasticity, LFSR).
 unit_sel is uniform over all gates via (lfsr % n_gates) — unlike the 3-gate RTL mux.
 
+Subclasses may override ``_plateau_mask_for_compare`` (time-varying or per-gate p) and
+``_after_compare_hook`` (e.g. feedback on trial Δ). Default behavior matches fixed ``plateau_mask``.
+
 Use for scaling experiments: not all truth tables are reachable; success rate vs
 (N, M) and target distribution measures learnability under this generator.
 
@@ -202,6 +205,14 @@ class TTChainLearner:
                     s += 1
         return s
 
+    def _plateau_mask_for_compare(self) -> int:
+        """Effective tie mask in COMPARE; override for time-varying or per-gate p."""
+        return self.plateau_mask
+
+    def _after_compare_hook(self) -> None:
+        """Called at end of COMPARE (after accept/reject); override for feedback control."""
+        pass
+
     def tick(self, train_enable: bool = True) -> None:
         if not train_enable:
             return
@@ -271,7 +282,7 @@ class TTChainLearner:
             u = self.unit_sel
             if self.plateau_escape:
                 self.lfsr = lfsr16_step(self.lfsr)
-                rare = (self.lfsr & self.plateau_mask) == 0
+                rare = (self.lfsr & self._plateau_mask_for_compare()) == 0
                 accept = self.new_score > self.old_score or (
                     self.new_score == self.old_score and rare
                 )
@@ -283,6 +294,7 @@ class TTChainLearner:
                 self._gates_mutated_last_tick = True
             else:
                 self.plastic[u] = min(3, self.plastic[u] + 1)
+            self._after_compare_hook()
             self.fsm = FsmState.IDLE
 
     def run_until_perfect(self, max_ticks: int) -> Tuple[bool, int]:
