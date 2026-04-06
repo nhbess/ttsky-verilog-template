@@ -66,8 +66,8 @@ def _run_simulation() -> int:
     # Compile Verilog: DUT (project.v), testbench wrapper (tb.v), search paths for `include.
     runner.build(
         sources=[
-            src_dir / "hvsync_generator.v",
             src_dir / "project.v",
+            src_dir / "tt_um_xor_learner.v",
             test_dir / "tb.v",
         ],
         includes=[src_dir],

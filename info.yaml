@@ -3,9 +3,9 @@ project:
   title:        ""      # Project title
   author:       ""      # Your name
   discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
-  description:  "VGA 1D cellular automata (from znah tt09-vga-ca)"
+  description:  "Tiny self-modifying 3-gate XOR learner (TT milestone 1); VGA CA archived under src/legacy/"
   language:     "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
-  clock_hz:     25175000 # 25.175 MHz — VGA pixel clock
+  clock_hz:     10000000 # trainer + inference; adjust for your shuttle
 
   # How many tiles your design occupies? A single tile is about 167x108 uM.
   tiles: "1x1"          # Valid values: 1x1, 1x2, 2x2, 3x2, 4x2, 6x2 or 8x2
@@ -18,30 +18,30 @@ project:
   # Don't forget to also update `PROJECT_SOURCES` in test/Makefile.
   source_files:
     - "project.v"
-    - "hvsync_generator.v"
+    - "tt_um_xor_learner.v"
 
 # The pinout of your project. Leave unused pins blank. DO NOT delete or add any pins.
 # This section is for the datasheet/website. Use descriptive names (e.g., RX, TX, MOSI, SCL, SEG_A, etc.).
 pinout:
   # Inputs
-  ui[0]: ""
-  ui[1]: ""
-  ui[2]: ""
+  ui[0]: "a (inference)"
+  ui[1]: "b (inference)"
+  ui[2]: "train_enable"
   ui[3]: ""
   ui[4]: ""
   ui[5]: ""
   ui[6]: ""
   ui[7]: ""
 
-  # Outputs (TinyVGA PMOD)
-  uo[0]: "R1"
-  uo[1]: "G1"
-  uo[2]: "B1"
-  uo[3]: "VSync"
-  uo[4]: "R0"
-  uo[5]: "G0"
-  uo[6]: "B0"
-  uo[7]: "HSync"
+  # Outputs (debug + y)
+  uo[0]: "y"
+  uo[1]: "old_score[0]"
+  uo[2]: "old_score[1]"
+  uo[3]: "old_score[2]"
+  uo[4]: "fsm[0]"
+  uo[5]: "fsm[1]"
+  uo[6]: "fsm[2]"
+  uo[7]: "train_enable echo"
 
   # Bidirectional pins
   uio[0]: ""
