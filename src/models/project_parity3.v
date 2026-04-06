@@ -1,13 +1,10 @@
 /*
  * SPDX-License-Identifier: Apache-2.0
- *
- * XOR learner — plateau / sidewalk: accept ties with ~1/8 LFSR chance.
- * Core: tt_um_xor_learner #(.PLATEAU_ESCAPE(1))
+ * Standalone wrapper for parity3 cocotb sim (not the default tt_um_example).
  */
-
 `default_nettype none
 
-module tt_um_xor_learner_plateau (
+module tt_um_example_parity3 (
     input  wire [7:0] ui_in,
     output wire [7:0] uo_out,
     input  wire [7:0] uio_in,
@@ -18,9 +15,9 @@ module tt_um_xor_learner_plateau (
     input  wire       rst_n
 );
 
-  tt_um_xor_learner #(
+  tt_um_parity3_learner #(
       .PLATEAU_ESCAPE(1)
-  ) core (
+  ) u_core (
       .ui_in  (ui_in),
       .uo_out (uo_out),
       .uio_in (uio_in),

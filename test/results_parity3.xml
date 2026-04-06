@@ -1,0 +1,6 @@
+<testsuites name="results">
+  <testsuite name="all" package="all">
+    <property name="random_seed" value="1775482332" />
+    <testcase name="test_parity3_learner_converges" classname="test_parity3" file="C:\Users\nhbes\Repos\ttsky-verilog-template\test\test_parity3.py" lineno="16" time="0.47028398513793945" sim_time_ns="183080.0" ratio_time="389296.692606491" />
+  </testsuite>
+</testsuites>

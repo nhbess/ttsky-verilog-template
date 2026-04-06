@@ -12,7 +12,7 @@ To learn more and get started, visit https://tinytapeout.com.
 
 ## Set up your Verilog project
 
-1. Add your Verilog files to the `src` folder.
+1. Add synthesizable Verilog under `src/models/` (see `info.yaml` `source_files`).
 2. Edit the [info.yaml](info.yaml) and update information about your project, paying special attention to the `source_files` and `top_module` properties. If you are upgrading an existing Tiny Tapeout project, check out our [online info.yaml migration tool](https://tinytapeout.github.io/tt-yaml-upgrade-tool/).
 3. Edit [docs/info.md](docs/info.md) and add a description of your project.
 4. Adapt the testbench to your design. See [test/README.md](test/README.md) for more information.
@@ -21,8 +21,11 @@ To learn more and get started, visit https://tinytapeout.com.
 
 ```sh
 pip install -r test/requirements.txt
-python run_sim.py              # cocotb regression (Icarus)
-python viz/render_vga.py       # iverilog → VCD → viz/frame.png
+python run_sim.py                      # cocotb XOR learner (Icarus)
+python run_sim_parity3.py              # cocotb 3-bit parity (separate build)
+python src/experiments/experiment_1.py # plots → src/results/
+python src/experiments/experiment_2.py
+python viz/render_vga.py               # iverilog → VCD → viz/frame.png
 ```
 
 ## Tiny Tapeout CI

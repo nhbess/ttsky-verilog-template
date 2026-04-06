@@ -6,7 +6,7 @@ SIM ?= icarus
 FST ?= -fst # Use more efficient FST format
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = project.v tt_um_xor_learner.v tt_um_xor_learner_plateau.v tt_um_xor_learner_strict.v
+PROJECT_SOURCES = models/project.v models/tt_um_xor_learner.v
 
 ifneq ($(GATES),yes)
 
@@ -33,7 +33,7 @@ VERILOG_SOURCES += $(PWD)/gate_level_netlist.v
 endif
 
 # Allow sharing configuration between design and testbench via `include`:
-COMPILE_ARGS 		+= -I$(SRC_DIR)
+COMPILE_ARGS 		+= -I$(SRC_DIR) -I$(SRC_DIR)/models
 
 # Include the testbench sources:
 VERILOG_SOURCES += $(PWD)/tb.v

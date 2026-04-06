@@ -24,7 +24,8 @@ def _compile_and_run(viz_dir: Path, root: Path) -> int:
     vvp = viz_dir / "sim_render.vvp"
     src = [
         root / "src" / "hvsync_generator.v",
-        root / "src" / "project.v",
+        root / "src" / "models" / "project.v",
+        root / "src" / "models" / "tt_um_xor_learner.v",
         viz_dir / "tb_render.v",
     ]
     cmd = [
@@ -32,7 +33,7 @@ def _compile_and_run(viz_dir: Path, root: Path) -> int:
         "-g2012",
         "-DSIM",
         "-I",
-        str(root / "src"),
+        str(root / "src" / "models"),
         "-s",
         "tb_render",
         "-o",

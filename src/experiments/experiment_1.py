@@ -4,13 +4,13 @@
 Experiment 1 — compare strict vs plateau (sidewalk) XOR learner rules.
 
 Uses ref/tt_xor_learner_spec.py (matches tt_um_xor_learner #(.PLATEAU_ESCAPE)).
-RTL default build: tt_um_xor_learner_plateau via project.v — verify with:
+RTL: src/models/project.v instantiates tt_um_xor_learner #(.PLATEAU_ESCAPE(1)). Verify:
   python run_sim.py
 
-Outputs (under viz/):
-  experiment_1_strict.png   — strict only (new > old)
-  experiment_1_plateau.png  — plateau / sidewalk (tie ~1/8)
-  experiment_1_compare.png  — both overlaid for A/B
+Outputs (src/results/):
+  experiment_1_strict.png, experiment_1_plateau.png, experiment_1_compare.png
+
+Run from repo root: python src/experiments/experiment_1.py
 
 Requires: matplotlib, numpy (test/requirements.txt)
 """
@@ -21,8 +21,10 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT / "ref"))
+# repo_root/src/experiments/this_file.py
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+SRC_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "ref"))
 
 import tt_xor_learner_spec as spec  # noqa: E402
 
@@ -34,10 +36,10 @@ BATCH_SEED_START = 1
 BATCH_SEED_COUNT = 120
 BATCH_MAX_TICKS = 8000
 
-VIZ = ROOT / "viz"
-OUT_STRICT = VIZ / "experiment_1_strict.png"
-OUT_PLATEAU = VIZ / "experiment_1_plateau.png"
-OUT_COMPARE = VIZ / "experiment_1_compare.png"
+RESULTS = SRC_ROOT / "results"
+OUT_STRICT = RESULTS / "experiment_1_strict.png"
+OUT_PLATEAU = RESULTS / "experiment_1_plateau.png"
+OUT_COMPARE = RESULTS / "experiment_1_compare.png"
 
 
 class BatchStats(NamedTuple):

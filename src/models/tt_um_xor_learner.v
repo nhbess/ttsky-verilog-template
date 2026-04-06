@@ -1,9 +1,8 @@
 /*
  * SPDX-License-Identifier: Apache-2.0
  *
- * XOR learner core (parameterized). Match ref/tt_xor_learner_spec.py.
- * Instantiate via tt_um_xor_learner_strict.v or tt_um_xor_learner_plateau.v
- * (wrappers) for tapeout-friendly module names.
+ * XOR learner (parameterized). Match ref/tt_xor_learner_spec.py.
+ * project.v sets .PLATEAU_ESCAPE(1) for sidewalk; use 0 for strict only.
  *
  * PLATEAU_ESCAPE=0: accept only if new_score > old_score (no LFSR step in COMPARE).
  * PLATEAU_ESCAPE=1: also accept ties when (lfsr_step & 7)==0 (~1/8); LFSR advances in COMPARE.

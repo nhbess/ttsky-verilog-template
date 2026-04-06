@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""
-Run cocotb + Icarus for this project (same sources as test/Makefile).
-
-Use this from the repo root — with or without activating .venv; the script
-re-invokes itself with .venv’s Python when that environment exists.
-"""
+"""Cocotb + Icarus for 3-bit parity learner (separate from XOR run_sim.py)."""
 
 from __future__ import annotations
 
@@ -17,8 +12,6 @@ from pathlib import Path
 
 
 def _maybe_reexec_with_venv() -> None:
-    # If a repo-local .venv exists, restart this script with that interpreter so
-    # cocotb / cocotb_tools are found without the user manually activating venv.
     root = Path(__file__).resolve().parent
     venv_python = (
         root / ".venv" / "Scripts" / "python.exe"
@@ -28,13 +21,11 @@ def _maybe_reexec_with_venv() -> None:
     if not venv_python.is_file():
         return
     try:
-        # Already running under the venv — avoid infinite re-exec.
         if Path(sys.executable).resolve().samefile(venv_python.resolve()):
             return
     except (FileNotFoundError, OSError):
         pass
     script = Path(__file__).resolve()
-    # -u: unbuffered stdout/stderr so cocotb output appears promptly.
     rc = subprocess.call(
         [str(venv_python), "-u", str(script), *sys.argv[1:]],
         cwd=str(root),
@@ -42,54 +33,45 @@ def _maybe_reexec_with_venv() -> None:
     raise SystemExit(rc)
 
 
-def _run_simulation() -> int:
-    # Deferred imports: only load cocotb after optional venv re-exec above.
+def _run() -> int:
     from cocotb_tools.check_results import get_results
     from cocotb_tools.runner import get_runner
 
     root = Path(__file__).resolve().parent
     test_dir = root / "test"
     src_dir = root / "src"
-    # SIM selects the simulator backend (default Icarus Verilog).
     sim = os.environ.get("SIM", "icarus").lower()
-    # WAVES=1 enables waveform dumping if the runner/simulator supports it.
     waves = os.environ.get("WAVES", "0") == "1"
 
     if sim == "icarus" and shutil.which("iverilog") is None:
         print("ERROR: iverilog is not on PATH.", file=sys.stderr)
         return 1
 
-    # Output directory for compiled RTL and cocotb artifacts (mirrors typical Makefile layout).
-    build_dir = test_dir / "sim_build" / "rtl"
-
+    build_dir = test_dir / "sim_build" / "parity3"
     runner = get_runner(sim)
-    # Compile Verilog: DUT (src/models/project.v), tb.v, include models/.
     runner.build(
         sources=[
-            src_dir / "models" / "project.v",
-            src_dir / "models" / "tt_um_xor_learner.v",
-            test_dir / "tb.v",
+            src_dir / "models" / "tt_um_parity3_learner.v",
+            src_dir / "models" / "project_parity3.v",
+            test_dir / "tb_parity3.v",
         ],
         includes=[src_dir / "models"],
         defines={"SIM": 1},
-        hdl_toplevel="tb",
+        hdl_toplevel="tb_parity3",
         build_dir=build_dir,
         clean=True,
         timescale=("1ns", "1ps"),
         waves=waves,
     )
-    # Run Python tests in test/test.py (cocotb test module name "test") against top-level "tb".
     results_path = runner.test(
-        hdl_toplevel="tb",
-        test_module="test",
+        hdl_toplevel="tb_parity3",
+        test_module="test_parity3",
         build_dir=build_dir,
         test_dir=test_dir,
-        results_xml="results.xml",
+        results_xml="results_parity3.xml",
         waves=waves,
     )
-
     try:
-        # Parse JUnit-style results written by the runner; num_failed drives exit status.
         _, num_failed = get_results(Path(results_path))
     except RuntimeError as e:
         print(e, file=sys.stderr)
@@ -97,13 +79,13 @@ def _run_simulation() -> int:
     if num_failed:
         print(f"ERROR: {num_failed} test(s) failed (see {results_path}).", file=sys.stderr)
         return 1
-    print("All tests passed.")
+    print("Parity3 simulation: all tests passed.")
     return 0
 
 
 def main() -> int:
     _maybe_reexec_with_venv()
-    return _run_simulation()
+    return _run()
 
 
 if __name__ == "__main__":

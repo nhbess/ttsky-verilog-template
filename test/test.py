@@ -31,7 +31,7 @@ async def test_xor_learner_converges(dut):
     max_cycles = 8000
     for _ in range(max_cycles):
         await ClockCycles(dut.clk, 1)
-        core = dut.user_project.u_core.core
+        core = dut.user_project.u_core
         g0 = int(core.g0.value)
         g1 = int(core.g1.value)
         g2 = int(core.g2.value)

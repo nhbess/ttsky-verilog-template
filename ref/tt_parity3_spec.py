@@ -1,12 +1,17 @@
 """
-Tiny Tapeout–style minimal XOR learner (behavioral reference).
+3-bit parity learner (behavioral reference) — independent from XOR spec.
 
-Golden spec for: src/models/tt_um_xor_learner.v (PLATEAU_ESCAPE in models/project.v).
+Topology: h1=g0(a,b), t=g1(h1,c), y=g2(h1,t). This 2-level chain can realize
+a^b^c (e.g. g0,g1 XOR + g2 copying t). The wiring h1=f(a,b), h2=f(b,c), y=f(h1,h2)
+cannot implement 3-input XOR (truth-table conflict on f).
 
-plateau_escape=False: strict compare (matches PLATEAU_ESCAPE=0).
-plateau_escape=True: also accept ties when (lfsr & 7)==0 after one step (~1/8).
+Training: 8 rows, score 0..8. Plateau uses plateau_mask=3 (~1/4 tie rate after
+LFSR step); XOR learner uses /8. Tunable on the dataclass for experiments.
 
-Run: python ref/tt_xor_learner_spec.py
+Pin semantics (RTL): ui_in[0]=a, ui_in[1]=b, ui_in[2]=c, ui_in[3]=train_enable.
+Matches: src/models/tt_um_parity3_learner.v (PLATEAU_AND_MASK default 3).
+
+Run: python ref/tt_parity3_spec.py
 """
 
 from __future__ import annotations
@@ -15,28 +20,23 @@ from dataclasses import dataclass, field
 from enum import IntEnum, auto
 from typing import List, Tuple
 
-# --- XOR training set (2-bit sample_idx indexes these) ---
-XOR_ROWS: Tuple[Tuple[int, int, int], ...] = (
-    (0, 0, 0),
-    (0, 1, 1),
-    (1, 0, 1),
-    (1, 1, 0),
-)
+
+def row_abc(idx: int) -> Tuple[int, int, int]:
+    """idx 0..7 -> (a,b,c) with a=msb of 3-bit index (Verilog sample_idx order)."""
+    i = idx & 7
+    return (i >> 2) & 1, (i >> 1) & 1, i & 1
 
 
 def gate_eval(tt4: int, x: int, y: int) -> int:
-    """4-bit truth table tt4[3:0]; index is {x,y} as bits (y LSb)."""
     idx = (x & 1) << 1 | (y & 1)
     return (tt4 >> idx) & 1
 
 
-def target_xor(a: int, b: int) -> int:
-    return (a & 1) ^ (b & 1)
+def target_parity3(a: int, b: int, c: int) -> int:
+    return (a & 1) ^ (b & 1) ^ (c & 1)
 
 
 class FsmState(IntEnum):
-    """Sequential trainer FSM (one transition per simulated clock)."""
-
     IDLE = auto()
     INIT_UNIT = auto()
     OLD_CLEAR = auto()
@@ -48,7 +48,6 @@ class FsmState(IntEnum):
 
 
 def lfsr16_step(state: int) -> int:
-    """16-bit Fibonacci LFSR, period 2^16-1; poly taps at 16,14,13,11."""
     state &= 0xFFFF
     if state == 0:
         state = 0xACE1
@@ -60,33 +59,12 @@ def lfsr16_step(state: int) -> int:
 
 
 def unit_sel_from_lfsr_low2(lfsr: int) -> int:
-    """Map lfsr[1:0] to 0..2 with 3 remapped to 0 (cheap biased mux in RTL)."""
     u = lfsr & 3
     return 0 if u == 3 else u
 
 
 @dataclass
-class TTXorLearner:
-    """
-    Register block (TT-minimal):
-
-      gate1[3:0], gate2[3:0], gate3[3:0]
-      plastic1[1:0], plastic2[1:0], plastic3[1:0]
-                        # threshold vs LFSR: allow if rnd2 < plastic[u]+1
-
-      unit_sel[1:0]     # 0..2
-      sample_idx[1:0]   # 0..3 during scoring passes
-      old_score[2:0]    # 0..4 fits in 3 bits
-      new_score[2:0]
-
-      old_gate[3:0]
-      trial_gate[3:0]
-
-      lfsr[15:0]        # random unit, trial nibble, tie-break
-      state             # FSM (frozen when train_enable=0 in RTL)
-      plateau_escape    # True = plateau/sidewalk rule (RTL PLATEAU_ESCAPE=1)
-    """
-
+class TTParity3Learner:
     gate: List[int] = field(default_factory=lambda: [0, 0, 0])
     plastic: List[int] = field(default_factory=lambda: [3, 3, 3])
     unit_sel: int = 0
@@ -98,6 +76,8 @@ class TTXorLearner:
     lfsr: int = 0xACE1
     fsm: FsmState = FsmState.IDLE
     plateau_escape: bool = True
+    # 3 for 1/4 tie rate (parity search space is larger than XOR); 7 for 1/8 like XOR.
+    plateau_mask: int = 3
 
     def reset(self, seed: int = 0xACE1) -> None:
         self.gate = [0, 0, 0]
@@ -110,38 +90,32 @@ class TTXorLearner:
         self.trial_gate = 0
         self.lfsr = seed & 0xFFFF or 0xACE1
         self.fsm = FsmState.IDLE
-        # Randomize initial gates from LFSR (cold start = bad score, high plasticity).
         for i in range(3):
             self.lfsr = lfsr16_step(self.lfsr)
             self.gate[i] = self.lfsr & 0xF
 
-    def forward(self, a: int, b: int) -> int:
+    def forward(self, a: int, b: int, c: int) -> int:
         h1 = gate_eval(self.gate[0], a, b)
-        h2 = gate_eval(self.gate[1], a, b)
-        return gate_eval(self.gate[2], h1, h2)
+        t = gate_eval(self.gate[1], h1, c)
+        return gate_eval(self.gate[2], h1, t)
 
-    def _forward_trial(self, a: int, b: int) -> int:
-        """Evaluate with trial_gate swapped into unit_sel only."""
+    def _forward_trial(self, a: int, b: int, c: int) -> int:
         u = self.unit_sel
         g = list(self.gate)
         g[u] = self.trial_gate
         h1 = gate_eval(g[0], a, b)
-        h2 = gate_eval(g[1], a, b)
-        return gate_eval(g[2], h1, h2)
+        t = gate_eval(g[1], h1, c)
+        return gate_eval(g[2], h1, t)
 
     def score_current_gates(self) -> int:
         s = 0
-        for a, b, _ in XOR_ROWS:
-            if self.forward(a, b) == target_xor(a, b):
+        for i in range(8):
+            a, b, c = row_abc(i)
+            if self.forward(a, b, c) == target_parity3(a, b, c):
                 s += 1
         return s
 
     def tick(self, train_enable: bool = True) -> None:
-        """
-        One clock edge. When train_enable is True (ui_in[2] in RTL), advance the
-        training FSM and LFSR as specified. When False, hold all trainer state;
-        inference remains forward(a,b) from pins, unchanged.
-        """
         if not train_enable:
             return
         s = self.fsm
@@ -168,13 +142,12 @@ class TTXorLearner:
             self.fsm = FsmState.OLD_ACC
 
         elif s == FsmState.OLD_ACC:
-            a, b, _ = XOR_ROWS[self.sample_idx]
-            if self.forward(a, b) == target_xor(a, b):
+            a, b, c = row_abc(self.sample_idx)
+            if self.forward(a, b, c) == target_parity3(a, b, c):
                 self.old_score += 1
             self.sample_idx += 1
-            if self.sample_idx >= 4:
+            if self.sample_idx >= 8:
                 self.fsm = FsmState.PROPOSE
-            # else stay OLD_ACC
 
         elif s == FsmState.PROPOSE:
             self.lfsr = lfsr16_step(self.lfsr)
@@ -190,18 +163,18 @@ class TTXorLearner:
             self.fsm = FsmState.NEW_ACC
 
         elif s == FsmState.NEW_ACC:
-            a, b, _ = XOR_ROWS[self.sample_idx]
-            if self._forward_trial(a, b) == target_xor(a, b):
+            a, b, c = row_abc(self.sample_idx)
+            if self._forward_trial(a, b, c) == target_parity3(a, b, c):
                 self.new_score += 1
             self.sample_idx += 1
-            if self.sample_idx >= 4:
+            if self.sample_idx >= 8:
                 self.fsm = FsmState.COMPARE
 
         elif s == FsmState.COMPARE:
             u = self.unit_sel
             if self.plateau_escape:
                 self.lfsr = lfsr16_step(self.lfsr)
-                rare = (self.lfsr & 0x7) == 0
+                rare = (self.lfsr & self.plateau_mask) == 0
                 accept = self.new_score > self.old_score or (
                     self.new_score == self.old_score and rare
                 )
@@ -214,25 +187,21 @@ class TTXorLearner:
                 self.plastic[u] = min(3, self.plastic[u] + 1)
             self.fsm = FsmState.IDLE
 
-    def run_until_xor(self, max_ticks: int = 50_000) -> Tuple[bool, int]:
-        """Run FSM cycles until XOR is perfect or max_ticks exhausted."""
+    def run_until_parity(self, max_ticks: int = 200_000) -> Tuple[bool, int]:
         for t in range(max_ticks):
-            if self.score_current_gates() == 4:
+            if self.score_current_gates() == 8:
                 return True, t
             self.tick()
-        return self.score_current_gates() == 4, max_ticks
+        return self.score_current_gates() == 8, max_ticks
 
 
 def main() -> None:
-    m = TTXorLearner()
+    m = TTParity3Learner(plateau_escape=True)
     m.reset()
-    print("TT XOR learner - register-level Python model")
-    print("initial gates:", [f"{g:04b}" for g in m.gate], "plastic:", m.plastic)
-    print("initial score (0..4):", m.score_current_gates())
-    ok, cycles = m.run_until_xor()
-    print("learned XOR:", ok, "fsm cycles (approx clk edges):", cycles)
-    print("final gates:", [f"{g:04b}" for g in m.gate], "plastic:", m.plastic)
-    print("sanity:", [m.forward(a, b) for a, b, _ in XOR_ROWS], "want", [t for _, _, t in XOR_ROWS])
+    print("3-bit parity learner (plateau)")
+    print("initial score (0..8):", m.score_current_gates())
+    ok, cyc = m.run_until_parity(50_000)
+    print("learned:", ok, "ticks:", cyc, "final score:", m.score_current_gates())
 
 
 if __name__ == "__main__":
