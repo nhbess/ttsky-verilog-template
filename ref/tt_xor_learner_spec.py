@@ -1,7 +1,10 @@
 """
 Tiny Tapeout–style minimal XOR learner (behavioral reference).
 
-Golden spec for: src/tt_um_xor_learner.v (keep in sync).
+Golden spec for: src/tt_um_xor_learner.v (+ strict/plateau wrappers).
+
+plateau_escape=False: strict compare (matches PLATEAU_ESCAPE=0).
+plateau_escape=True: also accept ties when (lfsr & 7)==0 after one step (~1/8).
 
 Run: python ref/tt_xor_learner_spec.py
 """
@@ -81,6 +84,7 @@ class TTXorLearner:
 
       lfsr[15:0]        # random unit, trial nibble, tie-break
       state             # FSM (frozen when train_enable=0 in RTL)
+      plateau_escape    # True = plateau/sidewalk rule (RTL PLATEAU_ESCAPE=1)
     """
 
     gate: List[int] = field(default_factory=lambda: [0, 0, 0])
@@ -93,6 +97,7 @@ class TTXorLearner:
     trial_gate: int = 0
     lfsr: int = 0xACE1
     fsm: FsmState = FsmState.IDLE
+    plateau_escape: bool = True
 
     def reset(self, seed: int = 0xACE1) -> None:
         self.gate = [0, 0, 0]
@@ -194,11 +199,18 @@ class TTXorLearner:
 
         elif s == FsmState.COMPARE:
             u = self.unit_sel
-            if self.new_score > self.old_score:
+            if self.plateau_escape:
+                self.lfsr = lfsr16_step(self.lfsr)
+                rare = (self.lfsr & 0x7) == 0
+                accept = self.new_score > self.old_score or (
+                    self.new_score == self.old_score and rare
+                )
+            else:
+                accept = self.new_score > self.old_score
+            if accept:
                 self.gate[u] = self.trial_gate
                 self.plastic[u] = max(0, self.plastic[u] - 1)
             else:
-                # Trial never committed to live gates; only plasticity rises.
                 self.plastic[u] = min(3, self.plastic[u] + 1)
             self.fsm = FsmState.IDLE
 

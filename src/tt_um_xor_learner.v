@@ -1,13 +1,19 @@
 /*
  * SPDX-License-Identifier: Apache-2.0
  *
- * Tiny Tapeout XOR learner — synthesizable RTL matching ref/tt_xor_learner_spec.py
- * (3x 4-bit gates, plasticity, 16-bit LFSR, sequential trainer FSM).
+ * XOR learner core (parameterized). Match ref/tt_xor_learner_spec.py.
+ * Instantiate via tt_um_xor_learner_strict.v or tt_um_xor_learner_plateau.v
+ * (wrappers) for tapeout-friendly module names.
+ *
+ * PLATEAU_ESCAPE=0: accept only if new_score > old_score (no LFSR step in COMPARE).
+ * PLATEAU_ESCAPE=1: also accept ties when (lfsr_step & 7)==0 (~1/8); LFSR advances in COMPARE.
  */
 
 `default_nettype none
 
-module tt_um_xor_learner (
+module tt_um_xor_learner #(
+    parameter PLATEAU_ESCAPE = 1
+) (
     input  wire [7:0] ui_in,
     output wire [7:0] uo_out,
     input  wire [7:0] uio_in,
@@ -103,7 +109,15 @@ module tt_um_xor_learner (
 
   wire [15:0] t3 = lfsr16_step_i(lfsr);
   wire [3:0]  cand_raw = t3[3:0];
+
   wire [3:0]  cand_fix = (cand_raw == old_gate) ? (cand_raw ^ 4'h1) : cand_raw;
+
+  wire [15:0] t_cmp = lfsr16_step_i(lfsr);
+  wire        rare_tie = (t_cmp[2:0] == 3'b000);
+  wire        accept_strict = (new_score > old_score);
+  wire        accept_plateau = (new_score > old_score) ||
+      ((new_score == old_score) && rare_tie);
+  wire        accept_cmp = PLATEAU_ESCAPE ? accept_plateau : accept_strict;
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -175,7 +189,9 @@ module tt_um_xor_learner (
         end
 
         S_COMPARE: begin
-          if (new_score > old_score) begin
+          if (PLATEAU_ESCAPE)
+            lfsr <= t_cmp;
+          if (accept_cmp) begin
             case (unit_sel)
               2'd0: begin
                 g0 <= trial_gate;
@@ -194,7 +210,6 @@ module tt_um_xor_learner (
               end
             endcase
           end else begin
-            // Trial never touched live gates; only plasticity increases on reject.
             case (unit_sel)
               2'd0: if (p0 != 2'd3) p0 <= p0 + 2'd1;
               2'd1: if (p1 != 2'd3) p1 <= p1 + 2'd1;

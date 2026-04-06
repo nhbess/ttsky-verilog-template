@@ -68,6 +68,8 @@ def _run_simulation() -> int:
         sources=[
             src_dir / "project.v",
             src_dir / "tt_um_xor_learner.v",
+            src_dir / "tt_um_xor_learner_plateau.v",
+            src_dir / "tt_um_xor_learner_strict.v",
             test_dir / "tb.v",
         ],
         includes=[src_dir],
