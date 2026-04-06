@@ -4,3 +4,5 @@ cocotb==2.0.1
 numpy>=1.26
 pillow>=10
 vcdvcd>=1.0
+# experiment_1.py plots
+matplotlib>=3.8
