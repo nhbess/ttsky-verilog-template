@@ -174,9 +174,14 @@ class TTChainLearner:
         us = self.unit_sel
         tg = self.trial_gate
         n = self.n_in
+        tro = getattr(self, "_trial_overrides", None)
 
         def gv(off: int) -> int:
             gi = base + off
+            if tro is not None:
+                if gi in tro:
+                    return tro[gi]
+                return g[gi]
             return tg if gi == us else g[gi]
 
         if n <= 2:
@@ -213,6 +218,15 @@ class TTChainLearner:
         """Called at end of COMPARE (after accept/reject); override for feedback control."""
         pass
 
+    def _sample_unit_for_trial(self, n_gates: int) -> int:
+        """Which gate index to mutate this cycle (after IDLE → INIT). Default: uniform via LFSR."""
+        self.lfsr = lfsr16_step(self.lfsr)
+        return unit_sel_mod(self.lfsr, n_gates)
+
+    def _plastic_trial_allowed(self, u: int, rnd2: int) -> bool:
+        """INIT: ``rnd2`` in 0..3; return whether this gate may start a mutation trial."""
+        return rnd2 < self.plastic[u] + 1
+
     def tick(self, train_enable: bool = True) -> None:
         if not train_enable:
             return
@@ -224,12 +238,11 @@ class TTChainLearner:
             self.fsm = FsmState.INIT_UNIT
 
         elif s == FsmState.INIT_UNIT:
-            self.lfsr = lfsr16_step(self.lfsr)
-            self.unit_sel = unit_sel_mod(self.lfsr, n_gates)
+            self.unit_sel = self._sample_unit_for_trial(n_gates)
             self.lfsr = lfsr16_step(self.lfsr)
             rnd2 = self.lfsr & 0x3
             u = self.unit_sel
-            allow = rnd2 < self.plastic[u] + 1
+            allow = self._plastic_trial_allowed(u, rnd2)
             if not allow:
                 self.fsm = FsmState.IDLE
             else:
