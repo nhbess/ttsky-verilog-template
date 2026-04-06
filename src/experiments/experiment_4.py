@@ -14,6 +14,9 @@ Each random target uses a deterministic table_seed derived from the run seed so
 runs are reproducible. Tick caps grow slightly with problem size; skipped (N,M)
 pairs (e.g. N=4, M=3) appear as grey in heatmaps to keep batch runtime reasonable.
 
+Efficiency: seeds run in parallel (process pool); ref ``run_until_perfect`` only
+re-scores after accepted gate writes, and trial forward avoids copying the gate list.
+
 Run from repo root:
   python src/experiments/experiment_4.py
 
@@ -22,15 +25,18 @@ Output: src/results/experiment_4_scaling.png
 
 from __future__ import annotations
 
+import os
 import sys
+from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import List, Tuple
+from typing import DefaultDict, List, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SRC_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "ref"))
 
-import tt_chain_learner_spec as spec  # noqa: E402
+import experiment_4_worker as e4w  # noqa: E402
 
 # --- knobs ---
 N_LIST = [2, 3, 4]
@@ -45,35 +51,6 @@ def max_ticks_for(n_in: int, n_out: int) -> int:
     cells = (1 << n_in) * n_out
     # Flat modest cap: cost per trial scales with `cells` (two full passes per compare).
     return min(52_000, int(26_000 + 650 * cells))
-
-
-def table_seed_for(kind: str, n_in: int, n_out: int, learner_seed: int) -> int:
-    if kind != "random":
-        return 0
-    return (learner_seed * 1_000_003 + n_in * 97 + n_out * 1_009) & 0x7FFFFFFF
-
-
-def run_batch(
-    n_in: int, n_out: int, kind: str
-) -> Tuple[float, List[int], int]:
-    cap = max_ticks_for(n_in, n_out)
-    ok_list: List[int] = []
-    for s in range(BATCH_SEED_START, BATCH_SEED_START + BATCH_SEED_COUNT):
-        ts = table_seed_for(kind, n_in, n_out, s)
-        tgt = spec.make_truth_tables(kind, n_in, n_out, table_seed=ts)
-        m = spec.TTChainLearner(
-            n_in=n_in,
-            n_out=n_out,
-            target=tgt,
-            plateau_escape=True,
-            plateau_mask=3,
-        )
-        m.reset(seed=s & 0xFFFF or 0xACE1)
-        ok, ticks = m.run_until_perfect(cap)
-        if ok:
-            ok_list.append(ticks)
-    rate = len(ok_list) / BATCH_SEED_COUNT
-    return rate, ok_list, cap
 
 
 def main() -> int:
@@ -97,20 +74,56 @@ def main() -> int:
     mean_ticks_r = np.full((n_n, n_m), np.nan)
     caps = np.full((n_n, n_m), np.nan)
 
+    jobs: List[Tuple[int, int, int, int, str, int, int]] = []
     for i, n_in in enumerate(N_LIST):
         for j, n_out in enumerate(m_cols):
             if n_out not in M_BY_N[n_in]:
                 continue
             cap = max_ticks_for(n_in, n_out)
             caps[i, j] = cap
-            rp, ticks_p, _ = run_batch(n_in, n_out, "parity")
-            rr, ticks_r, _ = run_batch(n_in, n_out, "random")
-            rate_p[i, j] = rp
-            rate_r[i, j] = rr
-            if ticks_p:
-                mean_ticks_p[i, j] = float(np.mean(ticks_p))
-            if ticks_r:
-                mean_ticks_r[i, j] = float(np.mean(ticks_r))
+            for kind in ("parity", "random"):
+                for s in range(BATCH_SEED_START, BATCH_SEED_START + BATCH_SEED_COUNT):
+                    jobs.append((i, j, n_in, n_out, kind, s, cap))
+
+    n_workers = max(1, min(os.cpu_count() or 1, 8, len(jobs)))
+    if n_workers <= 1:
+        raw = [e4w.run_one_seed(p) for p in jobs]
+    else:
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            raw = list(
+                pool.map(
+                    e4w.run_one_seed,
+                    jobs,
+                    chunksize=max(1, len(jobs) // (n_workers * 4)),
+                )
+            )
+
+    ticks_p_lists: DefaultDict[tuple[int, int], List[int]] = defaultdict(list)
+    ticks_r_lists: DefaultDict[tuple[int, int], List[int]] = defaultdict(list)
+    ok_p: DefaultDict[tuple[int, int], int] = defaultdict(int)
+    ok_r: DefaultDict[tuple[int, int], int] = defaultdict(int)
+    for i, j, kind, ok, ticks in raw:
+        key = (i, j)
+        if kind == "parity":
+            ok_p[key] += int(ok)
+            if ok:
+                ticks_p_lists[key].append(ticks)
+        else:
+            ok_r[key] += int(ok)
+            if ok:
+                ticks_r_lists[key].append(ticks)
+
+    for i, n_in in enumerate(N_LIST):
+        for j, n_out in enumerate(m_cols):
+            if n_out not in M_BY_N[n_in]:
+                continue
+            key = (i, j)
+            rate_p[i, j] = ok_p.get(key, 0) / BATCH_SEED_COUNT
+            rate_r[i, j] = ok_r.get(key, 0) / BATCH_SEED_COUNT
+            if key in ticks_p_lists:
+                mean_ticks_p[i, j] = float(np.mean(ticks_p_lists[key]))
+            if key in ticks_r_lists:
+                mean_ticks_r[i, j] = float(np.mean(ticks_r_lists[key]))
 
     cap_max = int(np.nanmax(caps))
 

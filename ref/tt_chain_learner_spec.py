@@ -111,6 +111,8 @@ class TTChainLearner:
     old_gate: int = 0
     trial_gate: int = 0
     lfsr: int = 0xACE1
+    # Set True in tick() only when COMPARE accepted a gate write (score can change).
+    _gates_mutated_last_tick: bool = field(default=False, repr=False, compare=False)
     fsm: FsmState = FsmState.IDLE
     plateau_escape: bool = True
     plateau_mask: int = 3
@@ -152,29 +154,43 @@ class TTChainLearner:
             self.lfsr = lfsr16_step(self.lfsr)
             self.gate[_] = self.lfsr & 0xF
 
-    def _forward_one_out(self, xs: Sequence[int], gate_slice: Sequence[int]) -> int:
-        if self.n_in <= 2:
-            return gate_eval(gate_slice[0], xs[0], xs[1])
-        h1 = gate_eval(gate_slice[0], xs[0], xs[1])
+    def _forward_one_out_slice(self, xs: Sequence[int], base: int) -> int:
+        g = self.gate
+        n = self.n_in
+        if n <= 2:
+            return gate_eval(g[base], xs[0], xs[1])
+        h1 = gate_eval(g[base], xs[0], xs[1])
         r = xs[2]
-        for k in range(1, self.n_in - 1):
-            r = gate_eval(gate_slice[k], h1, r)
-        return gate_eval(gate_slice[self.n_in - 1], h1, r)
+        for k in range(1, n - 1):
+            r = gate_eval(g[base + k], h1, r)
+        return gate_eval(g[base + n - 1], h1, r)
+
+    def _forward_one_out_trial(self, xs: Sequence[int], base: int) -> int:
+        """Like _forward_one_out_slice but gate at ``unit_sel`` reads ``trial_gate``."""
+        g = self.gate
+        us = self.unit_sel
+        tg = self.trial_gate
+        n = self.n_in
+
+        def gv(off: int) -> int:
+            gi = base + off
+            return tg if gi == us else g[gi]
+
+        if n <= 2:
+            return gate_eval(gv(0), xs[0], xs[1])
+        h1 = gate_eval(gv(0), xs[0], xs[1])
+        r = xs[2]
+        for k in range(1, n - 1):
+            r = gate_eval(gv(k), h1, r)
+        return gate_eval(gv(n - 1), h1, r)
 
     def forward_all(self, xs: Sequence[int]) -> Tuple[int, ...]:
         gpo = self.gpo
-        return tuple(
-            self._forward_one_out(xs, self.gate[m * gpo : (m + 1) * gpo])
-            for m in range(self.n_out)
-        )
+        return tuple(self._forward_one_out_slice(xs, m * gpo) for m in range(self.n_out))
 
     def _forward_trial_all(self, xs: Sequence[int]) -> Tuple[int, ...]:
-        g = list(self.gate)
-        g[self.unit_sel] = self.trial_gate
         gpo = self.gpo
-        return tuple(
-            self._forward_one_out(xs, g[m * gpo : (m + 1) * gpo]) for m in range(self.n_out)
-        )
+        return tuple(self._forward_one_out_trial(xs, m * gpo) for m in range(self.n_out))
 
     def score_current_gates(self) -> int:
         s = 0
@@ -189,6 +205,7 @@ class TTChainLearner:
     def tick(self, train_enable: bool = True) -> None:
         if not train_enable:
             return
+        self._gates_mutated_last_tick = False
         n_gates = len(self.gate)
         s = self.fsm
 
@@ -263,15 +280,19 @@ class TTChainLearner:
             if accept:
                 self.gate[u] = self.trial_gate
                 self.plastic[u] = max(0, self.plastic[u] - 1)
+                self._gates_mutated_last_tick = True
             else:
                 self.plastic[u] = min(3, self.plastic[u] + 1)
             self.fsm = FsmState.IDLE
 
     def run_until_perfect(self, max_ticks: int) -> Tuple[bool, int]:
+        """Same outcome as full score-every-tick loop: gates only change on COMPARE accept."""
+        if self.score_current_gates() == self.max_score:
+            return True, 0
         for t in range(max_ticks):
-            if self.score_current_gates() == self.max_score:
-                return True, t
             self.tick()
+            if self._gates_mutated_last_tick and self.score_current_gates() == self.max_score:
+                return True, t + 1
         return self.score_current_gates() == self.max_score, max_ticks
 
 
