@@ -227,6 +227,16 @@ class TTChainLearner:
         """INIT: ``rnd2`` in 0..3; return whether this gate may start a mutation trial."""
         return rnd2 < self.plastic[u] + 1
 
+    def _compare_accept(self) -> bool:
+        """COMPARE branch: accept proposed mutation (override, e.g. local error-only rules)."""
+        if self.plateau_escape:
+            self.lfsr = lfsr16_step(self.lfsr)
+            rare = (self.lfsr & self._plateau_mask_for_compare()) == 0
+            return self.new_score > self.old_score or (
+                self.new_score == self.old_score and rare
+            )
+        return self.new_score > self.old_score
+
     def tick(self, train_enable: bool = True) -> None:
         if not train_enable:
             return
@@ -293,14 +303,7 @@ class TTChainLearner:
 
         elif s == FsmState.COMPARE:
             u = self.unit_sel
-            if self.plateau_escape:
-                self.lfsr = lfsr16_step(self.lfsr)
-                rare = (self.lfsr & self._plateau_mask_for_compare()) == 0
-                accept = self.new_score > self.old_score or (
-                    self.new_score == self.old_score and rare
-                )
-            else:
-                accept = self.new_score > self.old_score
+            accept = self._compare_accept()
             if accept:
                 self.gate[u] = self.trial_gate
                 self.plastic[u] = max(0, self.plastic[u] - 1)

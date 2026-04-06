@@ -53,6 +53,12 @@ EXPERIMENTS: Dict[str, str] = {
     "8": "src/experiments/experiment_8.py",
     "9": "src/experiments/experiment_9.py",
     "10": "src/experiments/experiment_10.py",
+    "11": "src/experiments/experiment_11.py",
+    "12": "src/experiments/experiment_12.py",
+    "13": "src/experiments/experiment_13.py",
+    "14": "src/experiments/experiment_14.py",
+    "15": "src/experiments/experiment_15.py",
+    "16": "src/experiments/experiment_16.py",
 }
 
 StudyModel = Literal["xor", "parity3", "chain"]
