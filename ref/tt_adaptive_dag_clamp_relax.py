@@ -95,25 +95,29 @@ class TTAdaptiveDAGClampRelax(ad.TTAdaptiveDAGLearner):
         return rel_prev, settle
 
     def _dist_from_output(self, m: int) -> List[int]:
+        """Shortest hop distance from gate li to subnet output G-1 along child edges; -1 if unreachable."""
         G = self.G
-        dist = [10**9] * G
+        dist = [-1] * G
         dist[G - 1] = 0
         for _ in range(G + 2):
             changed = False
             for li in range(G - 2, -1, -1):
-                best = 10**9
+                best: int | None = None
                 for cj in range(li + 1, G):
                     s = self.n_in + li
                     if self.ina[m][cj] == s or self.inb[m][cj] == s:
-                        best = min(best, 1 + dist[cj])
-                if best < dist[li]:
-                    dist[li] = best
+                        if dist[cj] >= 0:
+                            nd = 1 + dist[cj]
+                            best = nd if best is None else min(best, nd)
+                new_d = -1 if best is None else best
+                if new_d != dist[li]:
+                    dist[li] = new_d
                     changed = True
             if not changed:
                 break
         return dist
 
-    def _local_propagated_metrics(
+    def _per_gate_propagated_e(
         self,
         rel: List[List[int]],
         xs: Sequence[int],
@@ -121,7 +125,8 @@ class TTAdaptiveDAGClampRelax(ad.TTAdaptiveDAGLearner):
         tri_tt: int | None,
         tri_pin: int | None,
         tri_src: int | None,
-    ) -> Tuple[float, int]:
+    ) -> List[float]:
+        """Propagated local e_u per flat gate (same definition as Exp16 aggregate E_local)."""
         G = self.G
         n_in = self.n_in
         m_mismatch = [0] * self.n_gates_flat
@@ -147,25 +152,59 @@ class TTAdaptiveDAGClampRelax(ad.TTAdaptiveDAGLearner):
                 calc = chain.gate_eval(tt, sig[ia], sig[ib])
                 m_mismatch[u] = 1 if rel[m][i] != calc else 0
 
-        d_out = [self._dist_from_output(m) for m in range(self.n_out)]
-        e_sum = 0.0
-        max_depth = 0
+        e_list = [0.0] * self.n_gates_flat
         for m in range(self.n_out):
             for li in range(G):
                 u = m * self.G + li
                 if li == G - 1:
-                    e_u = float(m_mismatch[u])
+                    e_list[u] = float(m_mismatch[u])
                 else:
                     ch_sum = 0
                     s_lin = n_in + li
                     for j in range(li + 1, G):
                         if self.ina[m][j] == s_lin or self.inb[m][j] == s_lin:
                             ch_sum += m_mismatch[m * self.G + j]
-                    e_u = float(ch_sum)
-                e_sum += e_u
-                if e_u > 0:
-                    max_depth = max(max_depth, d_out[m][li])
-        return e_sum, max_depth
+                    e_list[u] = float(ch_sum)
+        return e_list
+
+    def _max_depth_from_e_list(self, e_list: List[float]) -> int:
+        G = self.G
+        d_out = [self._dist_from_output(m) for m in range(self.n_out)]
+        max_depth = 0
+        for m in range(self.n_out):
+            for li in range(G):
+                u = m * self.G + li
+                if e_list[u] > 0:
+                    d = d_out[m][li]
+                    if d >= 0:
+                        max_depth = max(max_depth, d)
+        return max_depth
+
+    def _local_propagated_metrics(
+        self,
+        rel: List[List[int]],
+        xs: Sequence[int],
+        tri_flat: int,
+        tri_tt: int | None,
+        tri_pin: int | None,
+        tri_src: int | None,
+    ) -> Tuple[float, int]:
+        e_list = self._per_gate_propagated_e(rel, xs, tri_flat, tri_tt, tri_pin, tri_src)
+        return float(sum(e_list)), self._max_depth_from_e_list(e_list)
+
+    def _baseline_after_clamp_pick(self) -> List[float]:
+        """Sample clamp row, relax, set baseline E_local and logging; return per-gate e_u."""
+        self.lfsr = chain.lfsr16_step(self.lfsr)
+        self._clamp_idx = (self.lfsr & 0xFFFF) % self.nrows
+        self._clamp_xs = tuple(chain.row_bits(self._clamp_idx, self.n_in))
+        self._clamp_y = tuple(self.target[mo][self._clamp_idx] for mo in range(self.n_out))
+        rel, settle = self._relax_all(self._clamp_xs, self._clamp_y, -1, None, None, None)
+        e_list = self._per_gate_propagated_e(rel, self._clamp_xs, -1, None, None, None)
+        self._e_local_old = float(sum(e_list))
+        self.exp16_last_E_local = self._e_local_old
+        self.exp16_last_max_depth = self._max_depth_from_e_list(e_list)
+        self.exp16_last_settle_steps = settle
+        return e_list
 
     def _relax_E(
         self,
@@ -221,14 +260,7 @@ class TTAdaptiveDAGClampRelax(ad.TTAdaptiveDAGLearner):
                 self.fsm = chain.FsmState.OLD_CLEAR
 
         elif s == chain.FsmState.OLD_CLEAR:
-            self.lfsr = chain.lfsr16_step(self.lfsr)
-            self._clamp_idx = (self.lfsr & 0xFFFF) % self.nrows
-            self._clamp_xs = tuple(chain.row_bits(self._clamp_idx, self.n_in))
-            self._clamp_y = tuple(self.target[mo][self._clamp_idx] for mo in range(self.n_out))
-            self._e_local_old, d0, s0 = self._relax_E(self._clamp_xs, self._clamp_y)
-            self.exp16_last_E_local = self._e_local_old
-            self.exp16_last_max_depth = d0
-            self.exp16_last_settle_steps = s0
+            self._baseline_after_clamp_pick()
             self.fsm = chain.FsmState.PROPOSE
 
         elif s == chain.FsmState.PROPOSE:
