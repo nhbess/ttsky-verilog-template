@@ -19,6 +19,10 @@ Two scenarios (push toward experiment-4-style hardness):
 * **Easy:** N=3 M=1 parity (same as exp 6).
 * **Hard:** N=4 M=2 **random** targets (table seed per trajectory seed).
 
+Runs are parallelized over (policy, seed) jobs via ``multiprocessing`` (spawn-safe worker
+in ``ref/experiment_7_worker.py``). Override worker count with env ``EXPERIMENT_7_WORKERS``
+or pass ``--workers N`` (default: CPU count).
+
 Run from repo root:
   python src/experiments/experiment_7.py
 
@@ -27,10 +31,12 @@ Output: src/results/experiment_7_heterogeneous_p.png
 
 from __future__ import annotations
 
+import argparse
+import os
 import sys
 from pathlib import Path
 from statistics import mean
-from typing import Any, Callable, List, Sequence, Tuple
+from typing import List, Tuple
 
 import numpy as np
 
@@ -38,8 +44,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SRC_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "ref"))
 
-import experiment_4_worker as e4w  # noqa: E402
-import tt_chain_learner_spec as chain  # noqa: E402
+import experiment_7_worker as e7w  # noqa: E402
 
 RESULTS = SRC_ROOT / "results"
 OUT_FIG = RESULTS / "experiment_7_heterogeneous_p.png"
@@ -52,207 +57,58 @@ SCENARIOS: List[Tuple[str, int, int, str, int | None, int, int]] = [
     ("random 4×2", 4, 2, "random", None, 88_000, 12),
 ]
 
-
-class PlasticMappedPlateauChain(chain.TTChainLearner):
-    """Higher plasticity → smaller mask → higher p (more tie exploration)."""
-
-    _PLASTIC_MASK: Tuple[int, int, int, int] = (15, 7, 3, 1)
-
-    def _plateau_mask_for_compare(self) -> int:
-        u = self.unit_sel
-        pi = min(3, max(0, int(self.plastic[u])))
-        return self._PLASTIC_MASK[pi]
-
-
-class RecentSuccessExploitPlateauChain(chain.TTChainLearner):
-    """
-    Gates that recently produced an accepted strict improvement use low p (mask 15);
-    others use mask 3. Counts global COMPARE index since last such event on that gate.
-    """
-
-    def __init__(self, *, exploit_window: int = 8, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self.exploit_window = exploit_window
-        n = len(self.gate)
-        self._compare_n = 0
-        self._last_accept_improve: List[int] = [-1_000_000] * n
-
-    def reset(self, seed: int = 0xACE1) -> None:
-        super().reset(seed)
-        n = len(self.gate)
-        self._compare_n = 0
-        self._last_accept_improve = [-1_000_000] * n
-
-    def _after_compare_hook(self) -> None:
-        self._compare_n += 1
-        u = self.unit_sel
-        if self._gates_mutated_last_tick and self.new_score > self.old_score:
-            self._last_accept_improve[u] = self._compare_n
-
-    def _plateau_mask_for_compare(self) -> int:
-        u = self.unit_sel
-        if self._compare_n - self._last_accept_improve[u] <= self.exploit_window:
-            return 15
-        return 3
-
-
-class MixedPlasticSuccessPlateauChain(chain.TTChainLearner):
-    """max(plastic mask, success mask): exploit if plastic is calm OR recent win on gate."""
-
-    _PLASTIC_MASK: Tuple[int, int, int, int] = (15, 7, 3, 1)
-
-    def __init__(self, *, exploit_window: int = 8, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self.exploit_window = exploit_window
-        n = len(self.gate)
-        self._compare_n = 0
-        self._last_accept_improve = [-1_000_000] * n
-
-    def reset(self, seed: int = 0xACE1) -> None:
-        super().reset(seed)
-        n = len(self.gate)
-        self._compare_n = 0
-        self._last_accept_improve = [-1_000_000] * n
-
-    def _after_compare_hook(self) -> None:
-        self._compare_n += 1
-        u = self.unit_sel
-        if self._gates_mutated_last_tick and self.new_score > self.old_score:
-            self._last_accept_improve[u] = self._compare_n
-
-    def _plateau_mask_for_compare(self) -> int:
-        u = self.unit_sel
-        pi = min(3, max(0, int(self.plastic[u])))
-        mp = self._PLASTIC_MASK[pi]
-        ms = 15 if self._compare_n - self._last_accept_improve[u] <= self.exploit_window else 3
-        return max(mp, ms)
-
-
-PolicyFactory = Callable[[int, int, str, int, int], Callable[[int], chain.TTChainLearner]]
-
-
-def _target(n_in: int, n_out: int, kind: str, table_seed: int) -> List[List[int]]:
-    return chain.make_truth_tables(kind, n_in, n_out, table_seed=table_seed)
-
-
-def make_fixed_baseline(
-    n_in: int, n_out: int, kind: str, table_seed: int
-) -> Callable[[int], chain.TTChainLearner]:
-    tgt = _target(n_in, n_out, kind, table_seed)
-
-    def _f(seed: int) -> chain.TTChainLearner:
-        return chain.TTChainLearner(
-            n_in=n_in,
-            n_out=n_out,
-            target=tgt,
-            plateau_escape=True,
-            plateau_mask=3,
-        )
-
-    return _f
-
-
-def make_plastic_mapped(
-    n_in: int, n_out: int, kind: str, table_seed: int
-) -> Callable[[int], chain.TTChainLearner]:
-    tgt = _target(n_in, n_out, kind, table_seed)
-
-    def _f(seed: int) -> PlasticMappedPlateauChain:
-        return PlasticMappedPlateauChain(
-            n_in=n_in,
-            n_out=n_out,
-            target=tgt,
-            plateau_escape=True,
-            plateau_mask=3,
-        )
-
-    return _f
-
-
-def make_success_exploit(
-    n_in: int, n_out: int, kind: str, table_seed: int
-) -> Callable[[int], chain.TTChainLearner]:
-    tgt = _target(n_in, n_out, kind, table_seed)
-
-    def _f(seed: int) -> RecentSuccessExploitPlateauChain:
-        return RecentSuccessExploitPlateauChain(
-            n_in=n_in,
-            n_out=n_out,
-            target=tgt,
-            plateau_escape=True,
-            plateau_mask=3,
-            exploit_window=8,
-        )
-
-    return _f
-
-
-def make_mixed(
-    n_in: int, n_out: int, kind: str, table_seed: int
-) -> Callable[[int], chain.TTChainLearner]:
-    tgt = _target(n_in, n_out, kind, table_seed)
-
-    def _f(seed: int) -> MixedPlasticSuccessPlateauChain:
-        return MixedPlasticSuccessPlateauChain(
-            n_in=n_in,
-            n_out=n_out,
-            target=tgt,
-            plateau_escape=True,
-            plateau_mask=3,
-            exploit_window=8,
-        )
-
-    return _f
-
-
-POLICIES: List[Tuple[str, PolicyFactory]] = [
-    (r"fixed $p\!\sim\!1/4$", lambda n, m, k, ts: make_fixed_baseline(n, m, k, ts)),
-    (r"plastic $p_i$", lambda n, m, k, ts: make_plastic_mapped(n, m, k, ts)),
-    (r"success-exploit $p_i$", lambda n, m, k, ts: make_success_exploit(n, m, k, ts)),
-    (r"mixed plastic+success", lambda n, m, k, ts: make_mixed(n, m, k, ts)),
+POLICY_LABELS = [
+    r"fixed $p\!\sim\!1/4$",
+    r"plastic $p_i$",
+    r"success-exploit $p_i$",
+    r"mixed plastic+success",
 ]
 
 
-def _table_seed(kind: str, n_in: int, n_out: int, traj_seed: int, fixed: int | None) -> int:
-    if fixed is not None:
-        return fixed
-    return e4w.table_seed_for(kind, n_in, n_out, traj_seed)
-
-
 def run_scenario(
-    scen_label: str,
+    _scen_label: str,
     n_in: int,
     n_out: int,
     kind: str,
     table_seed_fixed: int | None,
     max_ticks: int,
     n_seeds: int,
+    workers: int,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Returns success_rate[policy], mean_ticks_ok[policy] (nan if no successes)."""
-    n_pol = len(POLICIES)
-    sr = np.zeros(n_pol)
-    mt = np.full(n_pol, np.nan)
-    for pi, (_pname, pfactory) in enumerate(POLICIES):
-        ts0 = _table_seed(kind, n_in, n_out, BATCH_SEED_START, table_seed_fixed)
-        factory = pfactory(n_in, n_out, kind, ts0)
-        ticks_ok: List[int] = []
-        ok_ct = 0
+    n_pol = len(POLICY_LABELS)
+    fixed_ts = table_seed_fixed
+    jobs: List[tuple[int, int, int, str, int, int, int | None]] = []
+    for pi in range(n_pol):
         for i in range(n_seeds):
             s = BATCH_SEED_START + i
-            ts = _table_seed(kind, n_in, n_out, s, table_seed_fixed)
-            if ts != ts0:
-                factory = pfactory(n_in, n_out, kind, ts)
-                ts0 = ts
-            m = factory(s)
-            m.reset(seed=s & 0xFFFF or 0xACE1)
-            ok, ticks = m.run_until_perfect(max_ticks)
-            if ok:
-                ok_ct += 1
-                ticks_ok.append(ticks)
-        sr[pi] = ok_ct / n_seeds
-        if ticks_ok:
-            mt[pi] = float(mean(ticks_ok))
+            jobs.append((pi, n_in, n_out, kind, s, max_ticks, fixed_ts))
+
+    from multiprocessing import Pool
+
+    with Pool(processes=workers) as pool:
+        results = pool.map(e7w.run_one, jobs)
+
+    sr = np.zeros(n_pol)
+    mt = np.full(n_pol, np.nan)
+    ticks_by_pi: List[List[int]] = [[] for _ in range(n_pol)]
+    ok_ct = [0] * n_pol
+    for policy_idx, ok, ticks in results:
+        if ok:
+            ok_ct[policy_idx] += 1
+            ticks_by_pi[policy_idx].append(ticks)
+    for pi in range(n_pol):
+        sr[pi] = ok_ct[pi] / n_seeds
+        if ticks_by_pi[pi]:
+            mt[pi] = float(mean(ticks_by_pi[pi]))
     return sr, mt
+
+
+def _default_workers() -> int:
+    env = os.environ.get("EXPERIMENT_7_WORKERS", "").strip()
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    return max(1, os.cpu_count() or 1)
 
 
 def main() -> int:
@@ -262,15 +118,30 @@ def main() -> int:
         print("pip install matplotlib", file=sys.stderr)
         return 1
 
-    n_pol = len(POLICIES)
+    ap = argparse.ArgumentParser(description="Experiment 7: heterogeneous p_i (parallel)")
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="process pool size (default: EXPERIMENT_7_WORKERS or CPU count)",
+    )
+    args = ap.parse_args()
+    workers = args.workers if args.workers is not None else _default_workers()
+    workers = max(1, workers)
+
+    n_pol = len(POLICY_LABELS)
     policy_short = ["fixed", "plastic", "success", "mixed"]
 
     all_sr: List[np.ndarray] = []
     all_mt: List[np.ndarray] = []
 
     for lab, n_in, n_out, kind, ts_fix, max_ticks, n_seeds in SCENARIOS:
-        print(f"Running scenario: {lab} ({n_seeds} seeds, {max_ticks} ticks)...")
-        sr, mt = run_scenario(lab, n_in, n_out, kind, ts_fix, max_ticks, n_seeds)
+        n_jobs = n_pol * n_seeds
+        print(
+            f"Running scenario: {lab} ({n_seeds} seeds x {n_pol} policies = {n_jobs} jobs, "
+            f"{workers} workers, {max_ticks} tick cap)..."
+        )
+        sr, mt = run_scenario(lab, n_in, n_out, kind, ts_fix, max_ticks, n_seeds, workers)
         all_sr.append(sr)
         all_mt.append(mt)
 
@@ -287,7 +158,9 @@ def main() -> int:
     w = 0.55
     for si, (row, (slab, *_)) in enumerate(zip(axes, SCENARIOS)):
         ax0, ax1 = row[0], row[1]
-        ax0.bar(x, all_sr[si], w, color="steelblue", edgecolor="white")
+        sr_row = all_sr[si]
+        mt_row = all_mt[si]
+        ax0.bar(x, sr_row, w, color="steelblue", edgecolor="white")
         ax0.set_xticks(x)
         ax0.set_xticklabels(policy_short, rotation=15, ha="right")
         ax0.set_ylabel("success rate")
@@ -295,20 +168,22 @@ def main() -> int:
         ax0.set_title(f"{slab}")
         ax0.grid(True, axis="y", alpha=0.3)
         for i in range(n_pol):
-            ax0.text(i, all_sr[si, i] + 0.03, f"{100 * all_sr[si, i]:.0f}%", ha="center", fontsize=8)
+            ax0.text(i, sr_row[i] + 0.03, f"{100 * sr_row[i]:.0f}%", ha="center", fontsize=8)
 
-        ax1.bar(x, np.nan_to_num(all_mt[si], nan=0.0), w, color="coral", edgecolor="white")
         ax1.set_xticks(x)
         ax1.set_xticklabels(policy_short, rotation=15, ha="right")
         ax1.set_ylabel("mean ticks (successes)")
         ax1.set_title(f"{slab} — speed when solved")
         ax1.grid(True, axis="y", alpha=0.3)
-        ymax = float(np.nanmax(all_mt[si])) if np.any(np.isfinite(all_mt[si])) else 1.0
+        ymax = float(np.nanmax(mt_row)) if np.any(np.isfinite(mt_row)) else 1.0
         ax1.set_ylim(0, ymax * 1.15 + 1)
         for i in range(n_pol):
-            v = all_mt[si, i]
-            txt = f"{v:.0f}" if v == v else "—"
-            ax1.text(i, (v if v == v else ymax * 0.4) + ymax * 0.02, txt, ha="center", fontsize=8)
+            v = mt_row[i]
+            if v == v:
+                ax1.bar(i, v, w, color="coral", edgecolor="white")
+                ax1.text(i, v + ymax * 0.02, f"{v:.0f}", ha="center", fontsize=8)
+            else:
+                ax1.text(i, ymax * 0.05, "n/a", ha="center", fontsize=8, color="gray")
 
     RESULTS.mkdir(parents=True, exist_ok=True)
     fig.savefig(OUT_FIG, dpi=150)
